@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import sqlite3
 import threading
@@ -149,8 +150,12 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
 	initialize_database()
-	host = "10.159.180.34"
-	port = 8000
+	# HOST/PORT environment variables let you deploy without hardcoding an
+	# IP address in the source; by default the server listens on every
+	# network interface (0.0.0.0), so it's reachable regardless of which
+	# IP the deployment host ends up with.
+	host = os.environ.get("HOST", "0.0.0.0")
+	port = int(os.environ.get("PORT", "8000"))
 	print(f"QR server listening on http://{host}:{port}")
 	server = ThreadingHTTPServer((host, port), QRCodeHandler)
 	# Each connected client (including long-lived /events subscribers) is

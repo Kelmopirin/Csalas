@@ -22,21 +22,29 @@ DATABASE_PATH = Path(__file__).with_name("qr_codes.db")
 MAX_REQUEST_SIZE = 64 * 1024
 
 # Thread-safe registry of all currently connected SSE subscribers, so a new
-# scanned QR code can be broadcast to every connected client.
-subscribers = set()
+# scanned QR code can be broadcast to every connected client. Maps each
+# subscriber's queue to a human-readable label (its address) for logging.
+subscribers = {}
 subscribers_lock = threading.Lock()
 
 
 def broadcast(event):
 	with subscribers_lock:
+		recipients = dict(subscribers)
 		dead_subscribers = []
-		for subscriber in subscribers:
+		for subscriber, label in recipients.items():
 			try:
 				subscriber.put_nowait(event)
 			except queue.Full:
 				dead_subscribers.append(subscriber)
 		for subscriber in dead_subscribers:
-			subscribers.discard(subscriber)
+			subscribers.pop(subscriber, None)
+
+	if recipients:
+		print(f"Broadcasting {event['qr_code']!r} to {len(recipients)} client(s): "
+			f"{', '.join(recipients.values())}")
+	else:
+		print(f"Broadcasting {event['qr_code']!r} to 0 clients (none connected)")
 
 @contextmanager
 def database_connection():
@@ -148,8 +156,10 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 		self.end_headers()
 
 		subscriber_queue = queue.Queue(maxsize=100)
+		client_label = f"{self.client_address[0]}:{self.client_address[1]}"
 		with subscribers_lock:
-			subscribers.add(subscriber_queue)
+			subscribers[subscriber_queue] = client_label
+		print(f"Client connected: {client_label} ({len(subscribers)} total)")
 
 		try:
 			while True:
@@ -167,7 +177,8 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 			pass
 		finally:
 			with subscribers_lock:
-				subscribers.discard(subscriber_queue)
+				subscribers.pop(subscriber_queue, None)
+			print(f"Client disconnected: {client_label} ({len(subscribers)} total)")
 
 	def _write_sse_chunk(self, data):
 		# Manually frame each write as an HTTP chunked-encoding chunk so

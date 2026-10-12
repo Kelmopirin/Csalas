@@ -6,7 +6,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from main import main
 
 
 DATABASE_PATH = Path(__file__).with_name("qr_codes.db")

@@ -2,11 +2,20 @@ import json
 import os
 import queue
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# Render (and most PaaS providers) capture stdout/stderr for their log
+# viewer, but Python block-buffers stdout when it isn't attached to a
+# terminal. Without this, print() output can sit in the buffer and never
+# show up in the platform's logs. stderr (used for request logging by
+# BaseHTTPRequestHandler) is unbuffered by default, so this mainly affects
+# our own print() calls.
+sys.stdout.reconfigure(line_buffering=True)
 
 
 DATABASE_PATH = Path(__file__).with_name("qr_codes.db")
@@ -48,6 +57,11 @@ def initialize_database():
 
 
 class QRCodeHandler(BaseHTTPRequestHandler):
+	# HTTP/1.1 lets us use chunked transfer-encoding for the SSE stream
+	# below, which reverse proxies (like Render's) need to forward each
+	# event as it's written instead of buffering the whole response.
+	protocol_version = "HTTP/1.1"
+
 	def send_json(self, status, payload):
 		body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 		self.send_response(status)
@@ -95,6 +109,13 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 		self.send_json(201, result)
 
 	def do_GET(self):
+		if self.path == "/":
+			# Lightweight health check endpoint for uptime monitors and the
+			# hosting platform (e.g. Render pings "/" to confirm the
+			# service is up).
+			self.send_json(200, {"status": "ok"})
+			return
+
 		if self.path == "/events":
 			self.handle_events()
 			return
@@ -120,7 +141,10 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 		self.send_response(200)
 		self.send_header("Content-Type", "text/event-stream; charset=utf-8")
 		self.send_header("Cache-Control", "no-cache")
-		self.send_header("Connection", "keep-alive")
+		self.send_header("Transfer-Encoding", "chunked")
+		# Hints to common reverse proxies (nginx/Render/etc.) not to buffer
+		# the response, which would otherwise delay or block the broadcast.
+		self.send_header("X-Accel-Buffering", "no")
 		self.end_headers()
 
 		subscriber_queue = queue.Queue(maxsize=100)
@@ -134,18 +158,26 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 				except queue.Empty:
 					# Periodic comment keeps the connection alive and lets us
 					# detect that the client has disconnected.
-					self.wfile.write(b": keep-alive\n\n")
-					self.wfile.flush()
+					self._write_sse_chunk(b": keep-alive\n\n")
 					continue
 
 				data = json.dumps(event, ensure_ascii=False)
-				self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
-				self.wfile.flush()
+				self._write_sse_chunk(f"data: {data}\n\n".encode("utf-8"))
 		except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
 			pass
 		finally:
 			with subscribers_lock:
 				subscribers.discard(subscriber_queue)
+
+	def _write_sse_chunk(self, data):
+		# Manually frame each write as an HTTP chunked-encoding chunk so
+		# proxies forward it immediately instead of waiting for the
+		# response to finish (which, for a streaming endpoint, never
+		# happens).
+		self.wfile.write(f"{len(data):x}\r\n".encode("ascii"))
+		self.wfile.write(data)
+		self.wfile.write(b"\r\n")
+		self.wfile.flush()
 
 
 if __name__ == "__main__":

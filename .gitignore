@@ -1,0 +1,8 @@
+password.txt
+main.py
+client.py
+/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pycache/

@@ -57,9 +57,6 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 		self.wfile.write(body)
 
 	def do_POST(self):
-		if self.path != "/qr":
-			self.send_json(404, {"error": "Not found"})
-			return
 
 		try:
 			content_length = int(self.headers.get("Content-Length", "0"))
@@ -80,6 +77,10 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 		qr_code = payload.get("qr_code") if isinstance(payload, dict) else None
 		if not isinstance(qr_code, str) or not qr_code.strip():
 			self.send_json(400, {"error": "qr_code must be a non-empty string"})
+			return
+
+		if "bme" not in qr_code.lower():
+			self.send_json(422, {"error": "qr_code must contain 'bme'", "qr_code": qr_code})
 			return
 
 		scanned_at = datetime.now(timezone.utc).isoformat()
@@ -149,7 +150,7 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
 	initialize_database()
-	host = "127.0.0.1"
+	host = "10.159.180.34"
 	port = 8000
 	print(f"QR server listening on http://{host}:{port}")
 	server = ThreadingHTTPServer((host, port), QRCodeHandler)

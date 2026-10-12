@@ -70,13 +70,14 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 	# event as it's written instead of buffering the whole response.
 	protocol_version = "HTTP/1.1"
 
-	def send_json(self, status, payload):
+	def send_json(self, status, payload, write_body=True):
 		body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 		self.send_response(status)
 		self.send_header("Content-Type", "application/json; charset=utf-8")
 		self.send_header("Content-Length", str(len(body)))
 		self.end_headers()
-		self.wfile.write(body)
+		if write_body:
+			self.wfile.write(body)
 
 	def do_POST(self):
 
@@ -117,19 +118,34 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 		self.send_json(201, result)
 
 	def do_GET(self):
+		self.handle_get(write_body=True)
+
+	def do_HEAD(self):
+		# Hosting platforms (e.g. Render) send HEAD requests for health
+		# checks; without this they'd get a 501 "Unsupported method" and
+		# might consider the service unhealthy. Reuses the GET handling but
+		# only sends headers, no body.
+		self.handle_get(write_body=False)
+
+	def handle_get(self, write_body):
 		if self.path == "/":
 			# Lightweight health check endpoint for uptime monitors and the
 			# hosting platform (e.g. Render pings "/" to confirm the
 			# service is up).
-			self.send_json(200, {"status": "ok"})
+			self.send_json(200, {"status": "ok"}, write_body=write_body)
 			return
 
 		if self.path == "/events":
-			self.handle_events()
+			if write_body:
+				self.handle_events()
+			else:
+				# /events is a never-ending stream, so a HEAD request can
+				# only sensibly confirm the endpoint exists.
+				self.send_json(200, {}, write_body=False)
 			return
 
 		if self.path != "/qr/latest":
-			self.send_json(404, {"error": "Not found"})
+			self.send_json(404, {"error": "Not found"}, write_body=write_body)
 			return
 
 		with database_connection() as connection:
@@ -138,10 +154,10 @@ class QRCodeHandler(BaseHTTPRequestHandler):
 			).fetchone()
 
 		if row is None:
-			self.send_json(404, {"error": "No QR code has been scanned"})
+			self.send_json(404, {"error": "No QR code has been scanned"}, write_body=write_body)
 			return
 
-		self.send_json(200, {"id": row[0], "qr_code": row[1], "scanned_at": row[2]})
+		self.send_json(200, {"id": row[0], "qr_code": row[1], "scanned_at": row[2]}, write_body=write_body)
 
 	def handle_events(self):
 		# Server-Sent Events endpoint: keeps the connection open so every
